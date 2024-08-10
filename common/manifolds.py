@@ -54,6 +54,13 @@ class NSpherical(CoordinateSystem):
             return jnp.array([r] + [jnp.arctan2(jnp.linalg.norm(x[i+1:]), x[i]) for i in range(2, self.dim)])
     
     def jacobian(self, x, alt_coords = None):
+        """
+        Get the jacobian of the coordinate system at a point.
+        If alt_coords is specified then:
+        letting c be cartesian coordinates, x being this coordinate system,
+        and y being the other coordinate system, we compute:
+        dy / dx = dy / dc @ dc / dx
+        """
         if alt_coords is None:
             return jnp.eye(self.dim)
         else:
@@ -76,7 +83,7 @@ class Manifold:
     def sample(self):
         raise NotImplementedError
     
-    def get_tangent(self, x):
+    def get_tangent_space(self, x):
         raise NotImplementedError
     
 class NSphere(Manifold):
@@ -89,17 +96,52 @@ class NSphere(Manifold):
     
     def contains(self, x):
         x = self.coordinate_system.to_cartesian(x)
-        return jnp.allclose(jnp.linalg.norm(x), self.radius ** 2)
+        return jnp.allclose(jnp.linalg.norm(x).sum(), self.radius ** 2)
     
     def sample(self):
         x = jnp.random.randn(self.dim)
         x = self.radius * x / jnp.linalg.norm(x)
         return self.coordinate_system.from_cartesian(x)
     
-    def get_tangent(self, x):
+    def get_tangent_space(self, x, alt_coords = None):
         assert self.contains(x), "Point not on the manifold"
-        x = self.coordinate_system.to_cartesian(x)
-        #TODO
+        if alt_coords is None:
+            return jnp.eye(self.dim)
+        else:
+            return self.coordinate_system.jacobian(x, alt_coords)
+        
+class BaseVectorField:
+    def __init__(self, manifold, dim):
+        self.manifold = manifold
+        self.dim = dim
+        self.components = jnp.zeros((dim,))
+        self.cartesian = Cartesian(dim)
+
+    def __call__(self, f, p):
+        x = self.manifold.coordinate_system.to_cartesian(p)
+        grad_f = grad(f)
+        # assume f is defined in cartesian coordinates
+        df_dx = grad_f(x)
+        dx_dp = self.cartesian.jacobian(x,
+                                        alt_coords = self.manifold.coordinate_system)
+        df_dp = dx_dp @ df_dx
+        return df_dp
+
+class BaseTensorField:
+    def __init__(self,
+                 manifold,
+                 dim,
+                 covariant_degree = 0,
+                 contravariant_degree = 0):
+        self.manifold = manifold
+        self.dim = dim
+        self.covariant_degree = covariant_degree
+        self.contravariant_degree = contravariant_degree
+
+        self.components = jnp.zeros((dim,) * covariant_degree + (dim,) * contravariant_degree)
+
+    def __call__(self, f, x):
+        raise NotImplementedError
 
 if __name__ == "__main__":
     # these are cartesian coordinates in R^2
@@ -126,11 +168,6 @@ if __name__ == "__main__":
     # dx' / dx at point_4 = point_2
     jacobian_4 = sphere_coords.jacobian(point_4,
                                         alt_coords=cartesian_coords)
-
-    print(jacobian_1)
-    print(jacobian_2)
-    print(jacobian_3)
-    print(jacobian_4)
 
     print(jnp.isclose(jacobian_1 @ jacobian_3, jnp.eye(2)))
     print(jnp.isclose(jacobian_2 @ jacobian_4, jnp.eye(2)))
