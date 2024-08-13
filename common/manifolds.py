@@ -43,7 +43,7 @@ class NSpherical(CoordinateSystem):
         if self.dim == 2:
             return x[0] * jnp.array([jnp.cos(x[1]), jnp.sin(x[1])])
         else:
-            return x[0] * jnp.array([jnp.cos(x[1])] + [jnp.cos(x[i]) * jnp.prod(jnp.sin(x[2:i])) for i in range(2, self.dim - 1)]
+            return x[0] * jnp.array([jnp.cos(x[1])] + [jnp.cos(x[i]) * jnp.prod(jnp.sin(x[2:i])) for i in range(2, self.dim)]
                                     + [jnp.prod(jnp.sin(x[1:self.dim]))])
     
     def from_cartesian(self, x):
@@ -51,7 +51,7 @@ class NSpherical(CoordinateSystem):
         if self.dim == 2:
             return jnp.array([r, jnp.arctan2(x[1], x[0])])
         else:
-            return jnp.array([r] + [jnp.arctan2(jnp.linalg.norm(x[i+1:]), x[i]) for i in range(2, self.dim)])
+            return jnp.array([r] + [jnp.arctan2(jnp.linalg.norm(x[i+1:]), x[i]) for i in range(1, self.dim)])
     
     def jacobian(self, x, alt_coords = None):
         """
@@ -110,7 +110,7 @@ class NSphere(Manifold):
         else:
             return self.coordinate_system.jacobian(x, alt_coords)
         
-class BaseVectorField:
+class VectorField:
     def __init__(self, manifold, dim):
         self.manifold = manifold
         self.dim = dim
@@ -127,21 +127,53 @@ class BaseVectorField:
         df_dp = dx_dp @ df_dx
         return df_dp
 
-class BaseTensorField:
+class TensorField:
     def __init__(self,
                  manifold,
                  dim,
+                 components = None,
                  covariant_degree = 0,
                  contravariant_degree = 0):
         self.manifold = manifold
         self.dim = dim
         self.covariant_degree = covariant_degree
         self.contravariant_degree = contravariant_degree
-
-        self.components = jnp.zeros((dim,) * covariant_degree + (dim,) * contravariant_degree)
+        if components is None:
+            components = jnp.zeros((dim,) * covariant_degree + (dim,) * contravariant_degree)
+        assert components.shape == (dim,) * covariant_degree + (dim,) * contravariant_degree, "Component shapes don't match tensor degree"
+        self.components = components
 
     def __call__(self, f, x):
         raise NotImplementedError
+    
+class Metric:
+    def __init__(self, manifold : Manifold):
+        self.manifold = manifold
+        self.dim = manifold.dim
+        self.cartesian = Cartesian(self.dim)
+
+    def __call__(self,
+                 v1 : VectorField,
+                 v2 : VectorField,
+                 p):
+        g_ij = self.metric_at_point(p)
+        metric_value = jnp.einsum("i,ij,j",
+                                  v1.components,
+                                  g_ij,
+                                  v2.components)
+        return metric_value
+    
+    def metric_at_point(self, p):
+        p_cart = self.manifold.coordinate_system.to_cartesian(p)
+        # jacobian of the coordinate system at p
+        jacobian = self.cartesian.jacobian(p_cart,
+                                           alt_coords=self.manifold.coordinate_system)
+        # using that J^T J = g_ij (derived from transformation law and flatness of Cartesian metric)
+        g_ij = jnp.einsum("ik,jk",
+                          jacobian,
+                          jacobian)
+        return g_ij
+
 
 if __name__ == "__main__":
     # these are cartesian coordinates in R^2
@@ -149,7 +181,7 @@ if __name__ == "__main__":
     point_2 = -jnp.array([jnp.sqrt(2), jnp.sqrt(2)], dtype=jnp.float32)
     # note these are same points in spherical coordinates
     point_3 = jnp.array([2, jnp.pi / 4], dtype=jnp.float32)
-    point_4 = jnp.array([2, 5 * jnp.pi / 4], dtype=jnp.float32)
+    point_4 = jnp.array([2, 5 * jnp.pi / 4], dtype=jnp.float32) 
 
     # call these x
     cartesian_coords = Cartesian(2)
@@ -171,3 +203,12 @@ if __name__ == "__main__":
 
     print(jnp.isclose(jacobian_1 @ jacobian_3, jnp.eye(2)))
     print(jnp.isclose(jacobian_2 @ jacobian_4, jnp.eye(2)))
+
+
+    #TODO : should result in diag(1, r^2, r^2 sin^2(theta))
+    test_manifold = Manifold(3,
+                             coordinate_system = NSpherical)
+    test_metric = Metric(test_manifold)
+    test_point = jnp.array([2, jnp.pi / 4, jnp.pi / 4], dtype=jnp.float32)
+    g_ij = test_metric.metric_at_point(test_point)
+    print(g_ij)
