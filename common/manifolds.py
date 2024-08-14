@@ -114,17 +114,37 @@ class NSphere(Manifold):
             return self.coordinate_system.jacobian(x, alt_coords)
         
 class VectorField:
-    def __init__(self, manifold, dim):
+    def __init__(self,
+                 manifold,
+                 dim,
+                 components = None):
         self.manifold = manifold
         self.dim = dim
-        self.components = jnp.zeros((dim,))
+        if components is None:
+            components = jnp.ones((dim,))
+        # constant function
+        if isinstance(components, jnp.ndarray):
+            components = lambda _: components
+        self.components = components
         self.cartesian = Cartesian(dim)
 
     def __call__(self, f, p):
+        """
+        Get the value of the vector field on a function f at point p.
+
+        Parameters
+        ----------
+        f : callable
+            Function to evaluate the vector field on.
+        p : jnp.ndarray
+            Point to evaluate the vector field at.
+        """
         x = self.manifold.coordinate_system.to_cartesian(p)
+        components_p = self.components(p)
+
         grad_f = grad(f)
         # assume f is defined in cartesian coordinates
-        df_dx = grad_f(x)
+        df_dx = grad_f(x) * components_p
         dx_dp = self.cartesian.jacobian(x,
                                         alt_coords = self.manifold.coordinate_system)
         df_dp = dx_dp @ df_dx
@@ -161,16 +181,12 @@ class Metric:
                  p):
         g_ij = self.metric_at_point(p)
         metric_value = jnp.einsum("i,ij,j",
-                                  v1.components,
+                                  v1.components(p),
                                   g_ij,
-                                  v2.components)
+                                  v2.components(p))
         return metric_value
     
     def metric_at_point(self, p):
-        p_cart = self.manifold.coordinate_system.to_cartesian(p)
-        # jacobian of the coordinate system at p: d (self) / d (cart)
-        #jacobian = self.cartesian.jacobian(p_cart,
-        #                                   alt_coords=self.manifold.coordinate_system)
         jacobian = self.manifold.coordinate_system.jacobian(p,
                                                             alt_coords=self.cartesian)
         # using that J^T J = g_ij (derived from transformation law and flatness of Cartesian metric)
@@ -188,7 +204,7 @@ if __name__ == "__main__":
 
     # call these x
     cartesian_coords = Cartesian(2)
-    # call these x'
+    # call these x' 
     sphere_coords = NSpherical(2)
 
     # dx / dx' at point_1
@@ -204,6 +220,7 @@ if __name__ == "__main__":
     jacobian_4 = sphere_coords.jacobian(point_4,
                                         alt_coords=cartesian_coords)
 
+    # should be identity matrices
     print(jnp.isclose(jacobian_1 @ jacobian_3, jnp.eye(2), atol=1e-5))
     print(jnp.isclose(jacobian_2 @ jacobian_4, jnp.eye(2), atol=1e-5))
 
