@@ -28,6 +28,7 @@ class Cartesian(CoordinateSystem):
         if alt_coords is None:
             return jnp.eye(self.dim)
         else:
+            # d (alt) / d (cart)
             grad_fn = jacrev(alt_coords.from_cartesian)
             return grad_fn(x)
     
@@ -43,7 +44,7 @@ class NSpherical(CoordinateSystem):
         if self.dim == 2:
             return x[0] * jnp.array([jnp.cos(x[1]), jnp.sin(x[1])])
         else:
-            return x[0] * jnp.array([jnp.cos(x[1])] + [jnp.cos(x[i]) * jnp.prod(jnp.sin(x[2:i])) for i in range(2, self.dim)]
+            return x[0] * jnp.array([jnp.cos(x[1])] + [jnp.cos(x[i]) * jnp.prod(jnp.sin(x[1:i])) for i in range(2, self.dim)]
                                     + [jnp.prod(jnp.sin(x[1:self.dim]))])
     
     def from_cartesian(self, x):
@@ -65,7 +66,9 @@ class NSpherical(CoordinateSystem):
             return jnp.eye(self.dim)
         else:
             x_cart = self.to_cartesian(x)
+            # d (cart) / d (self)
             grad_fn_self = jacrev(self.to_cartesian)
+            # d (alt) / d (cart)
             grad_fn_other = jacrev(alt_coords.from_cartesian)
             return grad_fn_other(x_cart) @ grad_fn_self(x)
     
@@ -165,13 +168,13 @@ class Metric:
     
     def metric_at_point(self, p):
         p_cart = self.manifold.coordinate_system.to_cartesian(p)
-        # jacobian of the coordinate system at p
-        jacobian = self.cartesian.jacobian(p_cart,
-                                           alt_coords=self.manifold.coordinate_system)
+        # jacobian of the coordinate system at p: d (self) / d (cart)
+        #jacobian = self.cartesian.jacobian(p_cart,
+        #                                   alt_coords=self.manifold.coordinate_system)
+        jacobian = self.manifold.coordinate_system.jacobian(p,
+                                                            alt_coords=self.cartesian)
         # using that J^T J = g_ij (derived from transformation law and flatness of Cartesian metric)
-        g_ij = jnp.einsum("ik,jk",
-                          jacobian,
-                          jacobian)
+        g_ij = jacobian.T @ jacobian
         return g_ij
 
 
@@ -201,11 +204,9 @@ if __name__ == "__main__":
     jacobian_4 = sphere_coords.jacobian(point_4,
                                         alt_coords=cartesian_coords)
 
-    print(jnp.isclose(jacobian_1 @ jacobian_3, jnp.eye(2)))
-    print(jnp.isclose(jacobian_2 @ jacobian_4, jnp.eye(2)))
+    print(jnp.isclose(jacobian_1 @ jacobian_3, jnp.eye(2), atol=1e-5))
+    print(jnp.isclose(jacobian_2 @ jacobian_4, jnp.eye(2), atol=1e-5))
 
-
-    #TODO : should result in diag(1, r^2, r^2 sin^2(theta))
     test_manifold = Manifold(3,
                              coordinate_system = NSpherical)
     test_metric = Metric(test_manifold)
