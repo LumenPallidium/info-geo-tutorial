@@ -149,6 +149,47 @@ class VectorField:
                                         alt_coords = self.manifold.coordinate_system)
         df_dp = dx_dp @ df_dx
         return df_dp
+    
+    def __add__(self, other):
+        assert self.manifold == other.manifold, "Manifolds don't match"
+        return VectorField(self.manifold,
+                           self.dim,
+                           lambda x: self.components(x) + other.components(x))
+    
+    def __mul__(self, scalar):
+        return VectorField(self.manifold,
+                           self.dim,
+                           lambda x: scalar * self.components(x))
+    
+    def covariant_derivative(self,
+                             other,
+                             metric):
+        def new_components(p):
+            christoffels = metric.christoffel_symbols(p)
+
+            #TODO : will need to get contorsion tensor in case of non-symmetric connection e.g.:
+            # K = self.manifold.contorsion_tensor(p)
+            # christoffels = christoffels + K
+
+            dY_dx = jacrev(other.components)(p)
+
+            components_X = self.components(p)
+            components_Y = other.components(p)
+
+            # standard equation for covariant derivative
+            new_field = jnp.einsum('j,ji->i',
+                                   components_X,
+                                   dY_dx)
+            new_field += jnp.einsum('ijk,j,k->i',
+                                    christoffels,
+                                    components_Y,
+                                    components_X)
+            return new_field
+        
+        return VectorField(self.manifold,
+                           self.dim,
+                           new_components)
+
 
 class TensorField:
     def __init__(self,
@@ -168,7 +209,7 @@ class TensorField:
 
     def __call__(self, f, x):
         raise NotImplementedError
-    
+
 class Metric:
     def __init__(self, manifold : Manifold):
         self.manifold = manifold
@@ -186,12 +227,32 @@ class Metric:
                                   v2.components(p))
         return metric_value
     
-    def metric_at_point(self, p):
+    def metric_at_point(self, p, covariant = True):
         jacobian = self.manifold.coordinate_system.jacobian(p,
                                                             alt_coords=self.cartesian)
         # using that J^T J = g_ij (derived from transformation law and flatness of Cartesian metric)
         g_ij = jacobian.T @ jacobian
+        if not covariant:
+            g_ij = jnp.linalg.inv(g_ij)
         return g_ij
+    
+    def christoffel_symbols(self, p):
+        g_ij = self.metric_at_point(p)
+        g_ij_inv = jnp.linalg.inv(g_ij)
+
+        #TODO: can this be done better with arange?
+        def get_christoffel_symbols(i, j, k):
+            dg_ij = jacrev(self.metric_at_point)
+            return 0.5 * jnp.sum(g_ij_inv[i] * (dg_ij(p)[j, :, k]
+                                                + dg_ij(p)[k, :, j]
+                                                - dg_ij(p)[:, j, k]))
+        
+        christoffels = jnp.array([[[get_christoffel_symbols(i, j, k)
+                                    for k in range(self.dim)]
+                                    for j in range(self.dim)]
+                                    for i in range(self.dim)])
+
+        return christoffels
 
 
 if __name__ == "__main__":
