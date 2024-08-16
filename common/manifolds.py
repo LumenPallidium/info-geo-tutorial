@@ -237,22 +237,61 @@ class Metric:
         return g_ij
     
     def christoffel_symbols(self, p):
+        """
+        The Christoffel symbols are the connection coefficients of the Levi-Civita connection.
+
+        In standard notation, Γ^m_{ij} corresponds to christoffels[m, i, j].
+        """
         g_ij = self.metric_at_point(p)
         g_ij_inv = jnp.linalg.inv(g_ij)
-
-        #TODO: can this be done better with arange?
-        def get_christoffel_symbols(i, j, k):
-            dg_ij = jacrev(self.metric_at_point)
-            return 0.5 * jnp.sum(g_ij_inv[i] * (dg_ij(p)[j, :, k]
-                                                + dg_ij(p)[k, :, j]
-                                                - dg_ij(p)[:, j, k]))
+        # note last index is the derivative index
+        dg_ij = jacrev(self.metric_at_point)(p)
         
-        christoffels = jnp.array([[[get_christoffel_symbols(i, j, k)
-                                    for k in range(self.dim)]
-                                    for j in range(self.dim)]
-                                    for i in range(self.dim)])
+        # standard formula for Christoffel symbols from metric
+        #TODO : can clean swapaxes
+        christoffels = dg_ij.swapaxes(1, 2) + dg_ij.swapaxes(0, 2) - dg_ij.swapaxes(0, 1)
+        christoffels = 0.5 * jnp.einsum('ml,ijl->mij',
+                                        g_ij_inv,
+                                        christoffels)
 
         return christoffels
+    
+class Connection:
+    def __init__(self, manifold : Manifold, metric : Metric = None):
+        self.manifold = manifold
+        #TODO : add support for non-metric connections
+        if metric is None:
+            raise ValueError("Need a metric to define a connection")
+        self.metric = metric
+
+    #TODO check this
+    def curvature(self, p):
+        """
+        Classic formula for the Riemann curvature tensor.
+
+        In standard notation, R^l_{ijk} corresponds to curvature[l, i, j, k].
+        """
+        christoffels = self.metric.christoffel_symbols(p)
+        # index order with Γ^l_{ij} is (l, i, j, {derivative index})
+        d_christoffels = jacrev(self.metric.christoffel_symbols)(p)
+        # all terms of the curvature tensor
+        curvature = d_christoffels.transpose(0, 2, 3, 1) - d_christoffels.transpose(0, 1, 3, 2)
+        curvature += jnp.einsum('lih,hjk->lijk',
+                                christoffels,
+                                christoffels)
+        curvature -= jnp.einsum('ljh,hik->lijk',
+                                christoffels,
+                                christoffels)
+        return curvature
+    
+    def torsion(self, p):
+        # metric connection is always symmetric
+        if self.metric is not None:
+            return jnp.zeros((self.manifold.dim,) * 3)
+        else:
+            christoffels = self.metric.christoffel_symbols(p)
+            torsion = christoffels - christoffels.swapaxes(1, 2)
+            return torsion
 
 
 if __name__ == "__main__":
@@ -289,5 +328,10 @@ if __name__ == "__main__":
                              coordinate_system = NSpherical)
     test_metric = Metric(test_manifold)
     test_point = jnp.array([2, jnp.pi / 4, jnp.pi / 4], dtype=jnp.float32)
-    g_ij = test_metric.metric_at_point(test_point)
+    g_ij = test_metric.metric_at_point(test_point).round(4)
     print(g_ij)
+    christoffels = test_metric.christoffel_symbols(test_point).round(4)
+    print(christoffels)
+    test_connection = Connection(test_manifold, test_metric)
+    curvature = test_connection.curvature(test_point).round(4)
+    print(curvature)
