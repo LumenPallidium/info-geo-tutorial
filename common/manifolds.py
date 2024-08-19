@@ -264,24 +264,24 @@ class Connection:
             raise ValueError("Need a metric to define a connection")
         self.metric = metric
 
-    #TODO check this
+    #TODO this doesn't seem to be working
     def curvature(self, p):
         """
         Classic formula for the Riemann curvature tensor.
 
         In standard notation, R^l_{ijk} corresponds to curvature[l, i, j, k].
         """
-        christoffels = self.metric.christoffel_symbols(p)
+        coefs = self.connection_coefficients(p)
         # index order with Γ^l_{ij} is (l, i, j, {derivative index})
-        d_christoffels = jacrev(self.metric.christoffel_symbols)(p)
+        d_coefs = jacrev(self.connection_coefficients)(p)
         # all terms of the curvature tensor
-        curvature = d_christoffels.transpose(0, 2, 3, 1) - d_christoffels.transpose(0, 1, 3, 2)
-        curvature += jnp.einsum('lih,hjk->lijk',
-                                christoffels,
-                                christoffels)
-        curvature -= jnp.einsum('ljh,hik->lijk',
-                                christoffels,
-                                christoffels)
+        curvature = d_coefs.transpose(0, 1, 3, 2) - d_coefs
+        curvature += jnp.einsum('hik,lhj->lijk',
+                                coefs,
+                                coefs)
+        curvature -= jnp.einsum('hij,lhk->lijk',
+                                coefs,
+                                coefs)
         return curvature
     
     def torsion(self, p):
@@ -289,10 +289,45 @@ class Connection:
         if self.metric is not None:
             return jnp.zeros((self.manifold.dim,) * 3)
         else:
-            christoffels = self.metric.christoffel_symbols(p)
-            torsion = christoffels - christoffels.swapaxes(1, 2)
+            coefs = self.connection_coefficients(p)
+            torsion = coefs - coefs.swapaxes(1, 2)
             return torsion
+        
+    def connection_coefficients(self, p):
+        """
+        Get the connection coefficients of the Levi-Civita connection.
 
+        In standard notation, Γ^m_{ij} corresponds to connection[m, i, j].
+        """
+        if self.metric is not None:
+            return self.metric.christoffel_symbols(p)
+        else:
+            raise NotImplementedError
+        
+    def connection_matrix(self, p1, p2, max_dist = 0.01):
+        """
+        Get the affine connection matrix between
+        tangent spaces at two points using the connection.
+
+        Parameters
+        ----------
+        p1 : jnp.ndarray
+            Starting point.
+        p2 : jnp.ndarray
+            Ending point.
+        max_dist : float
+            Maximum distance to travel in one step.
+        """
+        delta = p2 - p1
+        dist = jnp.linalg.norm(delta)
+        if dist < max_dist:
+            coefs = self.connection_coefficients(p1)
+            connection_matrix = jnp.eye(self.manifold.dim)
+            connection_matrix -= jnp.einsum('i,kij->kj',
+                                            delta,
+                                            coefs)
+            return connection_matrix
+        
 
 if __name__ == "__main__":
     # these are cartesian coordinates in R^2
@@ -335,3 +370,6 @@ if __name__ == "__main__":
     test_connection = Connection(test_manifold, test_metric)
     curvature = test_connection.curvature(test_point).round(4)
     print(curvature)
+    ricci = jnp.einsum('lilj->ij',
+                       curvature).round(4)
+    print(ricci)
