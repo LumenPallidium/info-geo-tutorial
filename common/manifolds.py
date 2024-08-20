@@ -161,6 +161,25 @@ class VectorField:
                            self.dim,
                            lambda x: scalar * self.components(x))
     
+    def is_parallel(self, connection, p):
+        """
+        Check if the vector field is parallel to the connection at a point.
+
+        Parameters
+        ----------
+        connection : Connection
+            Connection to check parallelism with.
+        p : jnp.ndarray
+            Point to check parallelism at.
+        """
+        coefs = connection.connection_coefficients(p)
+        self_grad = jacrev(self.components)(p)
+        # parallel transport equation
+        parallel_field = jnp.einsum('j,kij->ki',
+                                    self.components(p),
+                                    coefs)
+        return jnp.allclose(self_grad, parallel_field)
+                                       
     def covariant_derivative(self,
                              other,
                              metric):
@@ -256,6 +275,7 @@ class Metric:
 
         return christoffels
     
+    
 class Connection:
     def __init__(self, manifold : Manifold, metric : Metric = None):
         self.manifold = manifold
@@ -282,6 +302,18 @@ class Connection:
         curvature -= jnp.einsum('hij,lhk->lijk',
                                 coefs,
                                 coefs)
+        
+        ricci_curvature = jnp.einsum('ijki->jk',
+                                      curvature)
+        ricci_curvature -= jnp.einsum('ikij->jk',
+                                      curvature)
+        ricci_curvature += jnp.einsum('iip,pjk->jk',
+                                      coefs,
+                                      coefs)
+        ricci_curvature -= jnp.einsum('ijp,pik->jk',
+                                      coefs,
+                                      coefs)
+        
         return curvature
     
     def torsion(self, p):
