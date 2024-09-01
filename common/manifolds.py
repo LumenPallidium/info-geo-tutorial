@@ -259,7 +259,7 @@ class Metric:
         """
         The Christoffel symbols are the connection coefficients of the Levi-Civita connection.
 
-        In standard notation, Γ^m_{ij} corresponds to christoffels[m, i, j].
+        In standard notation, Γ^k_{ij} corresponds to christoffels[k, i, j].
         """
         g_ij = self.metric_at_point(p)
         g_ij_inv = jnp.linalg.inv(g_ij)
@@ -267,9 +267,8 @@ class Metric:
         dg_ij = jacrev(self.metric_at_point)(p)
         
         # standard formula for Christoffel symbols from metric
-        #TODO : can clean swapaxes
-        christoffels = dg_ij.swapaxes(1, 2) + dg_ij.swapaxes(0, 2) - dg_ij.swapaxes(0, 1)
-        christoffels = 0.5 * jnp.einsum('ml,ijl->mij',
+        christoffels = dg_ij.transpose(1, 2, 0) + dg_ij.transpose(0, 2, 1) - dg_ij
+        christoffels = 0.5 * jnp.einsum('kl,ijl->kij',
                                         g_ij_inv,
                                         christoffels)
 
@@ -277,12 +276,21 @@ class Metric:
     
     
 class Connection:
-    def __init__(self, manifold : Manifold, metric : Metric = None):
+    def __init__(self,
+                 manifold : Manifold,
+                 metric : Metric = None,
+                 connection_function = None):
         self.manifold = manifold
-        #TODO : add support for non-metric connections
-        if metric is None:
-            raise ValueError("Need a metric to define a connection")
         self.metric = metric
+
+        if connection_function is None:
+            assert metric is not None, "Need a metric to if no connection function is specified"
+            connection_function = lambda p : self.metric.christoffel_symbols(p)
+        # constant function
+        elif isinstance(connection_function,
+                        jnp.ndarray):
+            connection_function = lambda _: connection_function
+        self.connection_coefficients = connection_function
 
     #TODO this doesn't seem to be working
     def curvature(self, p):
@@ -295,18 +303,18 @@ class Connection:
         # index order with Γ^l_{ij} is (l, i, j, {derivative index})
         d_coefs = jacrev(self.connection_coefficients)(p)
         # all terms of the curvature tensor
-        curvature = d_coefs.transpose(0, 1, 3, 2) - d_coefs
-        curvature += jnp.einsum('hik,lhj->lijk',
+        curvature = d_coefs.transpose(0, 3, 1, 2) - d_coefs.transpose(0, 2, 1, 3)
+        curvature += jnp.einsum('ljh,hki->lijk',
                                 coefs,
                                 coefs)
-        curvature -= jnp.einsum('hij,lhk->lijk',
+        curvature -= jnp.einsum('lkh,hji->lijk',
                                 coefs,
                                 coefs)
         
         ricci_curvature = jnp.einsum('ijki->jk',
-                                      curvature)
+                                      d_coefs)
         ricci_curvature -= jnp.einsum('ikij->jk',
-                                      curvature)
+                                      d_coefs)
         ricci_curvature += jnp.einsum('iip,pjk->jk',
                                       coefs,
                                       coefs)
@@ -314,7 +322,7 @@ class Connection:
                                       coefs,
                                       coefs)
         
-        return curvature
+        return curvature, ricci_curvature
     
     def torsion(self, p):
         # metric connection is always symmetric
@@ -324,17 +332,6 @@ class Connection:
             coefs = self.connection_coefficients(p)
             torsion = coefs - coefs.swapaxes(1, 2)
             return torsion
-        
-    def connection_coefficients(self, p):
-        """
-        Get the connection coefficients of the Levi-Civita connection.
-
-        In standard notation, Γ^m_{ij} corresponds to connection[m, i, j].
-        """
-        if self.metric is not None:
-            return self.metric.christoffel_symbols(p)
-        else:
-            raise NotImplementedError
         
     def connection_matrix(self, p1, p2, max_dist = 0.01):
         """
@@ -360,7 +357,6 @@ class Connection:
                                             coefs)
             return connection_matrix
         
-
 if __name__ == "__main__":
     # these are cartesian coordinates in R^2
     point_1 = jnp.array([jnp.sqrt(2), jnp.sqrt(2)], dtype=jnp.float32)
@@ -388,6 +384,7 @@ if __name__ == "__main__":
                                         alt_coords=cartesian_coords)
 
     # should be identity matrices
+    print("Jacobians are as expected:")
     print(jnp.isclose(jacobian_1 @ jacobian_3, jnp.eye(2), atol=1e-5))
     print(jnp.isclose(jacobian_2 @ jacobian_4, jnp.eye(2), atol=1e-5))
 
@@ -396,12 +393,20 @@ if __name__ == "__main__":
     test_metric = Metric(test_manifold)
     test_point = jnp.array([2, jnp.pi / 4, jnp.pi / 4], dtype=jnp.float32)
     g_ij = test_metric.metric_at_point(test_point).round(4)
+    print("Metric at point:")
     print(g_ij)
     christoffels = test_metric.christoffel_symbols(test_point).round(4)
+    print("Christoffel symbols at point:")
     print(christoffels)
     test_connection = Connection(test_manifold, test_metric)
-    curvature = test_connection.curvature(test_point).round(4)
-    print(curvature)
+    curvature, ricci_test = test_connection.curvature(test_point)
+    print("Curvature at point:")
+    print(curvature.round(4))
     ricci = jnp.einsum('lilj->ij',
                        curvature).round(4)
-    print(ricci)
+    print("Ricci curvature at point computed two ways:")
+    print(ricci, "\n", ricci_test.round(4))
+    print("Ricci curvature matches:")
+    print(jnp.isclose(ricci, ricci_test.round(4)))
+    print("Scalar curvature at point:")
+    jnp.einsum("ij,ij->", g_ij, ricci)
