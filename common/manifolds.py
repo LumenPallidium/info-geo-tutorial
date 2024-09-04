@@ -182,13 +182,9 @@ class VectorField:
                                        
     def covariant_derivative(self,
                              other,
-                             metric):
+                             connection):
         def new_components(p):
-            christoffels = metric.christoffel_symbols(p)
-
-            #TODO : will need to get contorsion tensor in case of non-symmetric connection e.g.:
-            # K = self.manifold.contorsion_tensor(p)
-            # christoffels = christoffels + K
+            coefs = connection.connection_coefficients(p)
 
             dY_dx = jacrev(other.components)(p)
 
@@ -200,7 +196,7 @@ class VectorField:
                                    components_X,
                                    dY_dx)
             new_field += jnp.einsum('ijk,j,k->i',
-                                    christoffels,
+                                    coefs,
                                     components_Y,
                                     components_X)
             return new_field
