@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+from jax.random import PRNGKey, normal
 from jax import grad, jacrev
 
 class CoordinateSystem:
@@ -101,8 +102,8 @@ class NSphere(Manifold):
         x = self.coordinate_system.to_cartesian(x)
         return jnp.allclose(jnp.linalg.norm(x).sum(), self.radius ** 2)
     
-    def sample(self):
-        x = jnp.random.randn(self.dim)
+    def sample(self, key):
+        x = normal(key, shape = (self.dim,))
         x = self.radius * x / jnp.linalg.norm(x)
         return self.coordinate_system.from_cartesian(x)
     
