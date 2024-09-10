@@ -4,6 +4,17 @@ from jax.random import PRNGKey, normal, chisquare
 from jax import grad, jacrev
 from manifolds import *
 
+def generate_mesh(dim, mesh_steps_per_dim = 100, grid_range = (-10, 10)):
+    """
+    Generate a mesh grid for a given dimension. Note this returns a tensor of shape (dim, mesh_steps_per_dim, ..., mesh_steps_per_dim)
+    where mesh_steps_per_dim is repeated dim times.
+    """
+    stepsize = (grid_range[1] - grid_range[0]) / mesh_steps_per_dim
+    stepvol = stepsize**dim
+    mesh_grid = jnp.meshgrid(*[jnp.linspace(*grid_range, mesh_steps_per_dim) for _ in range(dim)])
+    mesh_grid = jnp.stack(mesh_grid, axis = 0)
+    return mesh_grid, stepvol
+
 class StatisticalManifold(Manifold):
     def __init__(self, dim, param_dim, logpdf, shapes):
         super().__init__(dim = dim)
@@ -35,11 +46,7 @@ class StatisticalManifold(Manifold):
         """
         The Fisher metric is built into statistical manifolds.
         """
-        # make the mesh
-        stepsize = (grid_range[1] - grid_range[0]) / mesh_steps_per_dim
-        stepvol = stepsize**self.dim
-        mesh_grid = jnp.meshgrid(*[jnp.linspace(*grid_range, mesh_steps_per_dim) for _ in range(self.dim)])
-        mesh_grid = jnp.stack(mesh_grid, axis = 0)
+        mesh_grid, stepvol = generate_mesh(self.dim, mesh_steps_per_dim, grid_range)
 
         # gradient wrt to the parameters, not the data
         grad_logpdf = grad(self.apply_logpdf, argnums = 1)
@@ -53,9 +60,34 @@ class StatisticalManifold(Manifold):
         return fisher_metric
 
 class AlphaConnection(Connection):
-    def __init__(self, manifold):
-        self.manifold = manifold
+    def __init__(self, stat_manifold, alpha = 1):
+        self.alpha = min(max(alpha, 0), 1)
 
+        connection_function = self._generate_connection_function(stat_manifold)
+        super().__init__(stat_manifold, connection_function = connection_function)
+
+    def _generate_connection_function(self, stat_manifold, mesh_steps_per_dim = 100, grid_range = (-10, 10)):
+        grad_logpdf = grad(stat_manifold.apply_logpdf, argnums = 1)
+        hess_logpdf = jacrev(grad_logpdf, argnums = 1)
+        
+        def connection_function(parameters):
+            mesh_grid, stepvol = generate_mesh(self.dim, mesh_steps_per_dim, grid_range)
+            hess_logpdfs = jnp.apply_along_axis(hess_logpdf, 0, mesh_grid, parameters)
+            grad_logpdfs = jnp.apply_along_axis(grad_logpdf, 0, mesh_grid, parameters)
+
+            pdfs = jnp.apply_along_axis(stat_manifold.pdf, 0, mesh_grid, parameters)
+
+            # einsum over most of the dimensions
+            coefficient = jnp.einsum("ij...,k...,...->ijk", hess_logpdfs, grad_logpdfs, pdfs) * stepvol
+            if self.alpha != 1:
+                a_term = jnp.einsum("i...,j...,k...,...->ijk", grad_logpdfs, grad_logpdfs, grad_logpdfs, pdfs) * stepvol
+                coefficient += 0.5 * (1 - self.alpha) * a_term
+
+            return coefficient
+        
+        return connection_function
+
+#TODO : maybe make each pdf a class with its own logpdf and coerce_parameters method
 def multivariate_gaussian_logpdf(mu_params, sigma_params, eps = 1e-8):
     dim = mu_params.shape[0]
     K = jnp.sqrt(((2 * jnp.pi)**dim) * jnp.linalg.det(sigma_params))
