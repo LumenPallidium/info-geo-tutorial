@@ -271,7 +271,6 @@ class Metric:
 
         return christoffels
     
-    
 class Connection:
     def __init__(self,
                  manifold : Manifold,
@@ -289,12 +288,12 @@ class Connection:
             connection_function = lambda _: connection_function
         self.connection_coefficients = connection_function
 
-    #TODO this doesn't seem to be working
+    #TODO this doesn't seem to be correct for spherical but very close
     def curvature(self, p):
         """
-        Classic formula for the Riemann curvature tensor.
+        Classic formula for the Riemann curvature tensor at point p.
 
-        In standard notation, R^l_{ijk} corresponds to curvature[l, i, j, k].
+        In standard notation, $R^l_{ijk}$ corresponds to curvature[l, i, j, k].
         """
         coefs = self.connection_coefficients(p)
         # index order with Γ^l_{ij} is (l, i, j, {derivative index})
@@ -330,7 +329,7 @@ class Connection:
             torsion = coefs - coefs.swapaxes(1, 2)
             return torsion
         
-    def connection_matrix(self, p1, p2, max_dist = 0.01):
+    def connection_matrix(self, p1, p2, max_dist = 0.02):
         """
         Get the affine connection matrix between
         tangent spaces at two points using the connection.
@@ -354,6 +353,19 @@ class Connection:
                                             coefs)
             return connection_matrix
         
+    def parallel_transport(self, p1, p2, step_size = 0.01):
+        n_steps = jnp.linalg.norm(p2 - p1) / step_size
+        points = jnp.linspace(p1, p2,
+                              num = n_steps.astype(jnp.int16) + 1)
+        connection_matrix_full = jnp.eye(p1.shape[0])
+        last_point = p1.clone()
+        for i in range(1, points.shape[-1]):
+            point = points[i, :].clone()
+            connection_matrix_i = self.connection_matrix(last_point, point)
+            connection_matrix_full = connection_matrix_full @ connection_matrix_i
+            last_point = point.clone()
+        return connection_matrix_full
+
 if __name__ == "__main__":
     # these are cartesian coordinates in R^2
     point_1 = jnp.array([jnp.sqrt(2), jnp.sqrt(2)], dtype=jnp.float32)
@@ -389,6 +401,7 @@ if __name__ == "__main__":
                              coordinate_system = NSpherical)
     test_metric = Metric(test_manifold)
     test_point = jnp.array([2, jnp.pi / 4, jnp.pi / 4], dtype=jnp.float32)
+    test_point2 = jnp.array([2, jnp.pi / 2, jnp.pi / 4], dtype=jnp.float32)
     g_ij = test_metric.metric_at_point(test_point).round(4)
     print("Metric at point:")
     print(g_ij)
@@ -406,4 +419,6 @@ if __name__ == "__main__":
     print("Ricci curvature matches:")
     print(jnp.isclose(ricci, ricci_test.round(4)))
     print("Scalar curvature at point:")
-    jnp.einsum("ij,ij->", g_ij, ricci)
+    print(jnp.einsum("ij,ij->", g_ij, ricci))
+
+    transformation = test_connection.parallel_transport(test_point, test_point2)
