@@ -2,6 +2,7 @@ from math import prod
 import jax.numpy as jnp
 from jax.random import PRNGKey, normal, chisquare, binomial
 from jax import grad, jacrev
+from tqdm import tqdm
 from manifolds import *
 
 def generate_mesh(dim, mesh_steps_per_dim = 100, grid_range = (-10, 10)):
@@ -21,9 +22,10 @@ def hamiltonian_monte_carlo(stat_manifold,
                             n_points = 20,
                             n_steps = 1000,
                             burn_in = 100,
-                            step_size = 0.001,
+                            step_size = 0.0001,
                             inverse_mass = None,
-                            prng_key = None):
+                            prng_key = None,
+                            energy_tolerance = 0.01):
     """
     Performs Hamiltonian MCMC with no-uturn sampling.
 
@@ -46,6 +48,8 @@ def hamiltonian_monte_carlo(stat_manifold,
         Step size for updates.
     inverse_mass : jnp.array
         The inverse mass matrix for computing "kinetic energy". Defaults to identity.
+    energy_tolerance : float
+        How close start and end energy can be to be considered the same.
     """
     if inverse_mass is None:
         inverse_mass = jnp.eye(stat_manifold.dim)
@@ -55,11 +59,8 @@ def hamiltonian_monte_carlo(stat_manifold,
     if prng_key is None:
         prng_key = PRNGKey(0)
     points = normal(key, shape = (n_points, dim))
-    momentum = jnp.einsum("ij,nj->ni",
-                          mass,
-                          normal(key, shape = (n_points, dim)))
     # TODO : add uturn sampler
-    leapfrog_steps = 2
+    leapfrog_steps = 20
 
     # energy function is -logpdf, grad is force
     grad_logpdf = grad(stat_manifold.apply_logpdf, argnums = 0)
@@ -68,44 +69,55 @@ def hamiltonian_monte_carlo(stat_manifold,
                                                    1, x, parameters)
     function_value_sum = None
     n_evals = 0
+    points_lis = []
 
-    for step in range(n_steps):
+    for step in tqdm(range(n_steps)):
+        points_lis.append(points.clone())
+        momentum = jnp.einsum("ij,nj->ni",
+                        mass,
+                        normal(key, shape = (n_points, dim)))
         start_energies = -batch_logpdf(points)
         start_energies += jnp.einsum("mi,ij,mj->m",
                                      momentum,
-                                     mass,
+                                     inverse_mass,
                                      momentum)
 
         new_points = points.copy()
-        new_momentum = momentum.copy()
-        half_momentum = new_momentum + 0.5 * step_size * force_f(new_points)
-        for l_step in range(leapfrog_steps):
+        half_momentum = momentum.copy() + 0.5 * step_size * force_f(new_points)
+        for l_step in range(leapfrog_steps - 1):
             new_points += step_size * jnp.einsum("ij,mj->mi",
                                                  inverse_mass,
                                                  half_momentum)
             half_momentum += step_size * force_f(new_points)
         
+        # need one more full and half step
+        new_points += step_size * jnp.einsum("ij,mj->mi",
+                                             inverse_mass,
+                                             half_momentum)
+        new_momentum = half_momentum + 0.5 * step_size * force_f(new_points)
+
         new_energies = -batch_logpdf(new_points)
         new_energies += jnp.einsum("mi,ij,mj->m",
-                                     new_momentum,
-                                     mass,
-                                     new_momentum)
+                                   new_momentum,
+                                   inverse_mass,
+                                   new_momentum)
         #TODO it always diverges.. also should non-diverging points get sent through?
-        not_diverged = jnp.all(new_energies == start_energies)
-        if not_diverged:
+        not_diverged = jnp.isclose(new_energies, start_energies, atol = energy_tolerance)
+        if jnp.any(not_diverged):
             accept_probs = jnp.minimum(1, jnp.exp(-new_energies + start_energies))
-            accepts = binomial(key, 1, accept_probs).astype(jnp.bool_)
-            new_points[~accepts] = points[~accepts].copy()
+            accepts = binomial(key, 1, accept_probs).astype(jnp.bool_) & not_diverged
+            new_points = new_points.at[~accepts].set(points[~accepts])
             points = new_points.copy()
             if step > burn_in:
-                function_value = eval_function(points)
+                function_value = jnp.apply_along_axis(eval_function,
+                                                      1, points, parameters)
                 if function_value_sum is not None:
                     function_value_sum += function_value.mean(axis = 0)
                 else:
                     function_value_sum = function_value.mean(axis = 0)
                 n_evals += 1
 
-    return function_value_sum / n_evals
+    return function_value_sum / n_evals, points_lis
 
 class StatisticalManifold(Manifold):
     def __init__(self, dim, param_dim, logpdf, shapes):
@@ -145,8 +157,8 @@ class StatisticalManifold(Manifold):
         return fisher_metric
     
     def _fisher_metric_hmc(self, grad_logpdf, parameters):
-        def fisher_metric_fn(x):
-            grad_matrix = grad_logpdf(x)
+        def fisher_metric_fn(x, parameters):
+            grad_matrix = grad_logpdf(x, parameters)
             pointwise_fisher = jnp.einsum("...i,...j->...ij",
                                           grad_matrix, grad_matrix)
             return pointwise_fisher
@@ -208,14 +220,14 @@ class AlphaConnection(Connection):
 #TODO : maybe make each pdf a class with its own logpdf and coerce_parameters method
 def multivariate_gaussian_logpdf(mu_params, sigma_params, eps = 1e-8):
     dim = mu_params.shape[0]
-    K = jnp.sqrt(((2 * jnp.pi)**dim) * jnp.linalg.det(sigma_params))
-    return lambda x: -jnp.log(K + eps) - 0.5 * jnp.einsum("i,ij,j->",
+    K = ((2 * jnp.pi)**(dim) * jnp.linalg.det(sigma_params))
+    return lambda x: -0.5 * (jnp.log(K + eps) + jnp.einsum("i,ij,j->",
                                                           x - mu_params,
                                                           jnp.linalg.inv(sigma_params),
-                                                          x - mu_params)
+                                                          x - mu_params))
 
 if __name__ == "__main__":
-    dim = 3
+    dim = 2
     key = PRNGKey(0)
 
     parameters = normal(key, shape = (dim,))
@@ -233,4 +245,12 @@ if __name__ == "__main__":
                                    multivariate_gaussian_logpdf,
                                    [(dim,), (dim, dim)])
     
-    test = manifold.fisher_metric(parameters)
+    test, points = manifold.fisher_metric(parameters)
+    test2 = manifold.fisher_metric(parameters, method = "grid")
+
+    import matplotlib.pyplot as plt
+    points = jnp.vstack(points)
+    points = points.reshape(-1, 20, 2)
+
+    for i in range(1000):
+        plt.scatter(*points[i, :, :].T, alpha = 1 - (0.99**i))
