@@ -51,14 +51,15 @@ def hamiltonian_monte_carlo(stat_manifold,
     energy_tolerance : float
         How close start and end energy can be to be considered the same.
     """
+    dim = stat_manifold.dim
     if inverse_mass is None:
         inverse_mass = jnp.eye(stat_manifold.dim)
         mass = jnp.eye(stat_manifold.dim)
     else:
-        mass = jnp.invert(inverse_mass)
+        mass = jnp.linalg.inv(inverse_mass)
     if prng_key is None:
         prng_key = PRNGKey(0)
-    points = normal(key, shape = (n_points, dim))
+    points = normal(prng_key, shape = (n_points, dim))
     # TODO : add uturn sampler
     leapfrog_steps = 20
 
@@ -72,11 +73,11 @@ def hamiltonian_monte_carlo(stat_manifold,
     points_lis = []
 
     for step in tqdm(range(n_steps)):
-        points_lis.append(points.clone())
+        points_lis.append(points.copy())
         momentum = jnp.einsum("ij,nj->ni",
                         mass,
-                        normal(key, shape = (n_points, dim)))
-        start_energies = -batch_logpdf(points)
+                        normal(prng_key, shape = (n_points, dim)))
+        start_energies = batch_logpdf(points)
         start_energies += jnp.einsum("mi,ij,mj->m",
                                      momentum,
                                      inverse_mass,
@@ -96,7 +97,7 @@ def hamiltonian_monte_carlo(stat_manifold,
                                              half_momentum)
         new_momentum = half_momentum + 0.5 * step_size * force_f(new_points)
 
-        new_energies = -batch_logpdf(new_points)
+        new_energies = batch_logpdf(new_points)
         new_energies += jnp.einsum("mi,ij,mj->m",
                                    new_momentum,
                                    inverse_mass,
@@ -105,7 +106,7 @@ def hamiltonian_monte_carlo(stat_manifold,
         not_diverged = jnp.isclose(new_energies, start_energies, atol = energy_tolerance)
         if jnp.any(not_diverged):
             accept_probs = jnp.minimum(1, jnp.exp(-new_energies + start_energies))
-            accepts = binomial(key, 1, accept_probs).astype(jnp.bool_) & not_diverged
+            accepts = binomial(prng_key, 1, accept_probs).astype(jnp.bool_) & not_diverged
             new_points = new_points.at[~accepts].set(points[~accepts])
             points = new_points.copy()
             if step > burn_in:
@@ -228,9 +229,10 @@ def multivariate_gaussian_logpdf(mu_params, sigma_params, eps = 1e-8):
 
 if __name__ == "__main__":
     dim = 2
+    bias = 5
     key = PRNGKey(0)
 
-    parameters = normal(key, shape = (dim,))
+    parameters = normal(key, shape = (dim,)) + bias
 
     covariance_params = chisquare(key, 1, shape = (dim, dim))
     covariance_params += covariance_params.T
@@ -247,10 +249,27 @@ if __name__ == "__main__":
     
     test, points = manifold.fisher_metric(parameters)
     test2 = manifold.fisher_metric(parameters, method = "grid")
+    print("Estimated Fisher metric:\n", test, test2)
 
     import matplotlib.pyplot as plt
     points = jnp.vstack(points)
     points = points.reshape(-1, 20, 2)
 
-    for i in range(1000):
-        plt.scatter(*points[i, :, :].T, alpha = 1 - (0.99**i))
+    for i in range(20):
+        plt.plot(points[:, i, 0], 
+                 points[:, i, 1], 
+                 c = "black")
+
+    # plot the logpdf as a contour plot in the background
+    x = jnp.linspace(-10, 10, 100)
+    y = jnp.linspace(-10, 10, 100)
+    X, Y = jnp.meshgrid(x, y)
+    Z = jnp.zeros((100, 100))
+    #TODO : better way to do this?
+    for i in range(100):
+        for j in range(100):
+            Z = Z.at[i, j].set(manifold.apply_logpdf(jnp.array([X[i, j], Y[i, j]]), parameters))
+    plt.contourf(X, Y, Z, levels = 20, cmap = "jet", alpha = 0.5)
+    plt.colorbar()
+    plt.title("Hamiltonian Monte Carlo Sampling")
+
